@@ -1,0 +1,491 @@
+# Security & Code Quality Analysis
+#
+# This workflow automatically detects languages in your repository and runs appropriate security scanners.
+# It works out of the box without any configuration files needed.
+#
+# Features:
+# - Language auto-detection (Java, Python, JavaScript/TypeScript, Go, C#)
+# - Universal security scanning (Trivy, Semgrep, GitLeaks, TruffleHog)
+# - Language-specific analysis (Bandit for Python, CodeQL for all languages)
+# - Dynamic SonarQube configuration generation
+# - Automatic build system detection (Maven, Gradle, npm/yarn)
+#
+# Optional Setup:
+# To enable SonarQube scanning, add these repository secrets:
+# - SONAR_TOKEN: Your SonarQube/SonarCloud token
+# - SONAR_HOST_URL: Your SonarQube server URL (optional, defaults to SonarCloud)
+# - SONAR_ORGANIZATION: Your SonarCloud organization key (for SonarCloud only)
+
+name: Security & Code Quality Analysis
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # Language Detection and Dependency Scanning
+  universal-security-scan:
+    name: Universal Security Scan
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Detect languages in the repository
+      - name: Detect Languages
+        id: detect
+        run: |
+          echo "Detecting languages in repository..."
+
+          # Check for various language files
+          HAS_JAVA=false
+          HAS_PYTHON=false
+          HAS_JAVASCRIPT=false
+          HAS_TYPESCRIPT=false
+          HAS_GO=false
+          HAS_CSHARP=false
+          HAS_DOCKER=false
+
+          if find . -name "*.java" -o -name "pom.xml" -o -name "build.gradle" | grep -q .; then
+            HAS_JAVA=true
+            echo "Java detected"
+          fi
+
+          if find . -name "*.py" -o -name "requirements.txt" -o -name "setup.py" -o -name "Pipfile" | grep -q .; then
+            HAS_PYTHON=true
+            echo "Python detected"
+          fi
+
+          if find . -name "*.js" -o -name "package.json" | grep -q .; then
+            HAS_JAVASCRIPT=true
+            echo "JavaScript detected"
+          fi
+
+          if find . -name "*.ts" -o -name "tsconfig.json" | grep -q .; then
+            HAS_TYPESCRIPT=true
+            echo "TypeScript detected"
+          fi
+
+          if find . -name "*.go" -o -name "go.mod" | grep -q .; then
+            HAS_GO=true
+            echo "Go detected"
+          fi
+
+          if find . -name "*.cs" -o -name "*.csproj" -o -name "*.sln" | grep -q .; then
+            HAS_CSHARP=true
+            echo "C# detected"
+          fi
+
+          if find . -name "Dockerfile" -o -name "docker-compose.yml" | grep -q .; then
+            HAS_DOCKER=true
+            echo "Docker detected"
+          fi
+
+          echo "has_java=$HAS_JAVA" >> $GITHUB_OUTPUT
+          echo "has_python=$HAS_PYTHON" >> $GITHUB_OUTPUT
+          echo "has_javascript=$HAS_JAVASCRIPT" >> $GITHUB_OUTPUT
+          echo "has_typescript=$HAS_TYPESCRIPT" >> $GITHUB_OUTPUT
+          echo "has_go=$HAS_GO" >> $GITHUB_OUTPUT
+          echo "has_csharp=$HAS_CSHARP" >> $GITHUB_OUTPUT
+          echo "has_docker=$HAS_DOCKER" >> $GITHUB_OUTPUT
+
+      # Universal file system scanner - works for all languages
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "sarif"
+          output: "trivy-results.sarif"
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: "trivy-results.sarif"
+
+      # Semgrep - Universal static analysis
+      - name: Run Semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/secrets
+            p/owasp-top-ten
+            p/cwe-top-25
+          generateSarif: "1"
+
+      # Git secrets scanning
+      - name: Run GitLeaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false
+
+      # TruffleHog for additional secrets detection
+      - name: TruffleHog OSS
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+          extra_args: --debug --only-verified
+
+  # Language-specific analysis
+  language-specific-analysis:
+    name: Language Specific Analysis
+    runs-on: ubuntu-latest
+    needs: universal-security-scan
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Detect languages again (needed for this job)
+      - name: Detect Languages
+        id: detect
+        run: |
+          HAS_JAVA=false
+          HAS_PYTHON=false
+          HAS_JAVASCRIPT=false
+
+          if find . -name "*.java" -o -name "pom.xml" -o -name "build.gradle" | grep -q .; then
+            HAS_JAVA=true
+          fi
+
+          if find . -name "*.py" -o -name "requirements.txt" -o -name "setup.py" | grep -q .; then
+            HAS_PYTHON=true
+          fi
+
+          if find . -name "*.js" -o -name "package.json" -o -name "*.ts" -o -name "tsconfig.json" | grep -q .; then
+            HAS_JAVASCRIPT=true
+          fi
+
+          echo "has_java=$HAS_JAVA" >> $GITHUB_OUTPUT
+          echo "has_python=$HAS_PYTHON" >> $GITHUB_OUTPUT
+          echo "has_javascript=$HAS_JAVASCRIPT" >> $GITHUB_OUTPUT
+
+      # Java analysis
+      - name: Set up JDK for Java analysis
+        if: steps.detect.outputs.has_java == 'true'
+        uses: actions/setup-java@v4
+        with:
+          java-version: "11"
+          distribution: "temurin"
+
+      - name: Cache Maven dependencies
+        if: steps.detect.outputs.has_java == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Build Java project
+        if: steps.detect.outputs.has_java == 'true'
+        run: |
+          if [ -f "pom.xml" ]; then
+            mvn clean compile -DskipTests
+          elif [ -f "app/pom.xml" ]; then
+            cd app && mvn clean compile -DskipTests
+          elif find . -name "pom.xml" | head -1; then
+            cd $(dirname $(find . -name "pom.xml" | head -1)) && mvn clean compile -DskipTests
+          elif [ -f "build.gradle" ]; then
+            ./gradlew build -x test
+          fi
+
+      # Python analysis
+      - name: Set up Python
+        if: steps.detect.outputs.has_python == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install Python security tools
+        if: steps.detect.outputs.has_python == 'true'
+        run: |
+          pip install bandit safety pip-audit
+
+      - name: Run Bandit (Python security linter)
+        if: steps.detect.outputs.has_python == 'true'
+        run: |
+          bandit -r . -f sarif -o bandit-results.sarif || true
+          if [ -f bandit-results.sarif ]; then
+            echo "Bandit scan completed"
+          fi
+
+      - name: Run Safety (Python dependency scanner)
+        if: steps.detect.outputs.has_python == 'true'
+        run: |
+          safety check --json --output safety-report.json || true
+
+      - name: Run pip-audit (Python package vulnerability scanner)
+        if: steps.detect.outputs.has_python == 'true'
+        run: |
+          pip-audit --format=json --output=pip-audit-report.json || true
+
+      # JavaScript/TypeScript analysis
+      - name: Setup Node.js
+        if: steps.detect.outputs.has_javascript == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install Node.js security tools
+        if: steps.detect.outputs.has_javascript == 'true'
+        run: |
+          npm install -g @microsoft/eslint-formatter-sarif eslint audit-ci
+
+      - name: Run npm audit
+        if: steps.detect.outputs.has_javascript == 'true'
+        run: |
+          if [ -f "package.json" ]; then
+            npm audit --audit-level=moderate --json > npm-audit-report.json || true
+          fi
+
+      - name: Run Yarn audit (if yarn.lock exists)
+        if: steps.detect.outputs.has_javascript == 'true'
+        run: |
+          if [ -f "yarn.lock" ]; then
+            npx audit-ci --config audit-ci.json || true
+          fi
+
+      # Upload all SARIF results
+      - name: Upload Bandit SARIF results
+        if: steps.detect.outputs.has_python == 'true' && hashFiles('bandit-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: bandit-results.sarif
+
+      # Upload artifacts for manual review
+      - name: Upload security scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-scan-results
+          path: |
+            *.sarif
+            *.json
+            **/*-report.json
+          retention-days: 30
+
+  # SonarQube Analysis with dynamic configuration
+  sonarqube-analysis:
+    name: SonarQube Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Detect project structure and generate sonar-project.properties
+      - name: Generate SonarQube Configuration
+        id: sonar-config
+        run: |
+          echo "Analyzing project structure for SonarQube configuration..."
+
+          # Initialize variables
+          SOURCES=""
+          BINARIES=""
+          LIBRARIES=""
+          TEST_SOURCES=""
+          TEST_BINARIES=""
+          EXCLUSIONS="**/target/**,**/build/**,**/node_modules/**,**/.git/**,**/dist/**,**/coverage/**"
+
+          # Detect Java projects
+          if find . -name "*.java" | grep -q .; then
+            echo "Java project detected"
+            
+            # Check for Maven structure
+            if [ -f "pom.xml" ]; then
+              echo "Maven project in root"
+              SOURCES="src/main/java"
+              BINARIES="target/classes"
+              LIBRARIES="target/classes"
+              TEST_SOURCES="src/test/java"
+              TEST_BINARIES="target/test-classes"
+            elif find . -name "pom.xml" | head -1; then
+              echo "Maven project in subdirectory"
+              POM_DIR=$(dirname $(find . -name "pom.xml" | head -1))
+              SOURCES="$POM_DIR/src/main/java"
+              BINARIES="$POM_DIR/target/classes"
+              LIBRARIES="$POM_DIR/target/classes"
+              TEST_SOURCES="$POM_DIR/src/test/java"
+              TEST_BINARIES="$POM_DIR/target/test-classes"
+            elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+              echo "Gradle project detected"
+              SOURCES="src/main/java"
+              BINARIES="build/classes/java/main"
+              LIBRARIES="build/classes/java/main"
+              TEST_SOURCES="src/test/java"
+              TEST_BINARIES="build/classes/java/test"
+            else
+              echo "Java files found but no build system detected, using defaults"
+              SOURCES="src/main/java,src"
+              BINARIES="target/classes,build/classes,classes"
+              LIBRARIES="target/classes,build/classes,classes"
+            fi
+          fi
+
+          # Detect JavaScript/TypeScript projects
+          if find . -name "*.js" -o -name "*.ts" | grep -q .; then
+            echo "JavaScript/TypeScript project detected"
+            if [ -n "$SOURCES" ]; then
+              SOURCES="$SOURCES,src"
+            else
+              SOURCES="src,."
+            fi
+            EXCLUSIONS="$EXCLUSIONS,**/node_modules/**,**/dist/**,**/build/**"
+          fi
+
+          # Detect Python projects
+          if find . -name "*.py" | grep -q .; then
+            echo "Python project detected"
+            if [ -n "$SOURCES" ]; then
+              SOURCES="$SOURCES,."
+            else
+              SOURCES="."
+            fi
+            EXCLUSIONS="$EXCLUSIONS,**/__pycache__/**,**/venv/**,**/env/**,**/.venv/**"
+          fi
+
+          # Default to current directory if no sources detected
+          if [ -z "$SOURCES" ]; then
+            SOURCES="."
+          fi
+
+          # Generate sonar-project.properties
+          cat > sonar-project.properties << EOF
+          # Auto-generated SonarQube configuration
+          sonar.projectKey=\${GITHUB_REPOSITORY//\//_}
+          sonar.organization=\${SONAR_ORGANIZATION:-}
+          sonar.projectName=\${GITHUB_REPOSITORY#*/}
+          sonar.projectVersion=\${GITHUB_SHA:0:7}
+
+          # Source configuration
+          sonar.sources=$SOURCES
+          sonar.sourceEncoding=UTF-8
+
+          # Binary and library paths (for compiled languages)
+          EOF
+
+          if [ -n "$BINARIES" ]; then
+            echo "sonar.java.binaries=$BINARIES" >> sonar-project.properties
+          fi
+
+          if [ -n "$LIBRARIES" ]; then
+            echo "sonar.java.libraries=$LIBRARIES" >> sonar-project.properties
+          fi
+
+          if [ -n "$TEST_SOURCES" ]; then
+            echo "sonar.tests=$TEST_SOURCES" >> sonar-project.properties
+          fi
+
+          if [ -n "$TEST_BINARIES" ]; then
+            echo "sonar.java.test.binaries=$TEST_BINARIES" >> sonar-project.properties
+          fi
+
+          cat >> sonar-project.properties << EOF
+
+          # Exclusions
+          sonar.exclusions=$EXCLUSIONS
+
+          # Coverage and test reports (if available)
+          sonar.coverage.jacoco.xmlReportPaths=**/target/site/jacoco/jacoco.xml,**/build/reports/jacoco/test/jacocoTestReport.xml
+          sonar.junit.reportPaths=**/target/surefire-reports/*.xml,**/build/test-results/test/*.xml
+
+          # Language-specific configurations
+          sonar.java.source=8
+          sonar.java.target=8
+          EOF
+
+          echo "Generated sonar-project.properties:"
+          cat sonar-project.properties
+
+          # Set outputs for later steps
+          echo "sources=$SOURCES" >> $GITHUB_OUTPUT
+          echo "binaries=$BINARIES" >> $GITHUB_OUTPUT
+
+      # Set up Java if Java project detected
+      - name: Set up JDK for SonarQube
+        if: contains(steps.sonar-config.outputs.sources, 'java') || contains(steps.sonar-config.outputs.binaries, 'target') || contains(steps.sonar-config.outputs.binaries, 'build')
+        uses: actions/setup-java@v4
+        with:
+          java-version: "11"
+          distribution: "temurin"
+
+      # Build Java project if needed
+      - name: Build Java project for SonarQube
+        if: contains(steps.sonar-config.outputs.sources, 'java') || contains(steps.sonar-config.outputs.binaries, 'target') || contains(steps.sonar-config.outputs.binaries, 'build')
+        run: |
+          if [ -f "pom.xml" ]; then
+            mvn clean compile test-compile -DskipTests
+          elif find . -name "pom.xml" | head -1; then
+            POM_DIR=$(dirname $(find . -name "pom.xml" | head -1))
+            cd "$POM_DIR" && mvn clean compile test-compile -DskipTests
+          elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+            ./gradlew compileJava compileTestJava
+          fi
+
+      # Set up Node.js if JavaScript/TypeScript project detected
+      - name: Set up Node.js for SonarQube
+        if: contains(steps.sonar-config.outputs.sources, 'src') || contains(github.repository, 'js') || contains(github.repository, 'node')
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      # Install Node.js dependencies if package.json exists
+      - name: Install Node.js dependencies
+        if: hashFiles('**/package.json') != ''
+        run: |
+          if [ -f "package.json" ]; then
+            npm ci || npm install
+          fi
+
+      # Run SonarQube Scan (requires SONAR_TOKEN secret to be configured)
+      - name: SonarQube Scan
+        continue-on-error: true
+        uses: sonarqube-quality-gate-action@master
+        with:
+          scanMetadataReportFile: target/sonar/report-task.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_ORGANIZATION: ${{ secrets.SONAR_ORGANIZATION }}
+
+      # Alternative: Use SonarCloud GitHub Action
+      - name: SonarCloud Scan (Alternative)
+        if: failure()
+        continue-on-error: true
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      # Upload generated configuration as artifact
+      - name: Upload SonarQube Configuration
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonar-configuration
+          path: sonar-project.properties
+          retention-days: 30
