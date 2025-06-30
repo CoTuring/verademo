@@ -1,6 +1,6 @@
 # VeraDemo - Blab-a-Gag
 
-[![SonarQube Cloud](https://sonarcloud.io/images/project_badges/sonarcloud-light.svg)](https://sonarcloud.io/summary/new_code?id=CoTuring_verademo)
+[![Quality gate](https://sonarcloud.io/api/project_badges/quality_gate?project=CoTuring_verademo)](https://sonarcloud.io/summary/new_code?id=CoTuring_verademo)
 
 ### :information_source: Notice
 
